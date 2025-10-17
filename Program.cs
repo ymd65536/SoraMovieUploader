@@ -161,18 +161,55 @@ catch (Exception ex)
 
 async Task UploadVideoAsync(string videoPath)
 {
-    // コンソール環境向けにApplication Default Credentialsを使用
-    var credential = await GoogleCredential.GetApplicationDefaultAsync();
-    if (credential.IsCreateScopedRequired)
+    // Prefer OAuth installed-app flow so the user can grant the correct YouTube scopes.
+    // This will open a browser for consent and persist the token to a local FileDataStore.
+    // If client_secrets.json is not found, fall back to Application Default Credentials (ADC).
+    BaseClientService.Initializer initializer = new BaseClientService.Initializer()
     {
-        credential = credential.CreateScoped(YouTubeService.Scope.YoutubeUpload);
+        ApplicationName = "SoraMovieUploader"
+    };
+
+    Google.Apis.Auth.OAuth2.UserCredential? userCredential = null;
+    try
+    {
+        // Look for client_secrets.json in the working directory
+        var credPath = Path.Combine(Directory.GetCurrentDirectory(), "client_secrets.json");
+        if (File.Exists(credPath))
+        {
+            using var stream = new FileStream(credPath, FileMode.Open, FileAccess.Read);
+            // Request the youtube.upload scope
+            string[] scopes = new[] { YouTubeService.Scope.YoutubeUpload };
+            // Store credentials in a folder named "token.json" (FileDataStore)
+            var fileDataStore = new Google.Apis.Util.Store.FileDataStore("SoraMovieUploader.TokenStore");
+            userCredential = await GoogleWebAuthorizationBroker.AuthorizeAsync(
+                GoogleClientSecrets.FromStream(stream).Secrets,
+                scopes,
+                "user",
+                CancellationToken.None,
+                fileDataStore
+            );
+
+            initializer.HttpClientInitializer = userCredential;
+        }
+        else
+        {
+            // Fallback to ADC: still try to create scoped credential if possible
+            var adc = await GoogleCredential.GetApplicationDefaultAsync();
+            if (adc.IsCreateScopedRequired)
+            {
+                adc = adc.CreateScoped(YouTubeService.Scope.YoutubeUpload);
+            }
+            initializer.HttpClientInitializer = adc;
+            Console.WriteLine("⚠️ client_secrets.json not found. Falling back to Application Default Credentials. Ensure ADC has youtube.upload scope granted.");
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"認証の初期化に失敗しました: {ex.Message}");
+        throw;
     }
 
-    var youtubeService = new YouTubeService(new BaseClientService.Initializer()
-    {
-        HttpClientInitializer = credential,
-        ApplicationName = "SoraMovieUploader"
-    });
+    var youtubeService = new YouTubeService(initializer);
 
     var video = new Video();
     video.Snippet = new VideoSnippet();
